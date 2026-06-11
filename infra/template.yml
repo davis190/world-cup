@@ -25,7 +25,7 @@ Parameters:
       After this UTC timestamp the schedule stops firing (EventBridge Scheduler
       EndDate) and the Lambda refuses to call the API even if invoked manually.
       Final is 2026-07-19; default leaves a buffer for post-final corrections.
-    Default: "2026-07-22T00:00:00Z"
+    Default: "2026-07-22T00:00:00.000Z"
 
 Resources:
   # ---------------- static site ----------------
