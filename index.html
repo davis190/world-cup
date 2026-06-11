@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WC26 · The Pool — World Cup 2026 Tracker</title>
+<meta name="description" content="2026 FIFA World Cup schedule, standings, bracket and friend-pool payout tracker.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Barlow+Semi+Condensed:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Spline+Sans+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+</head>
+<body>
+<div class="floodlight floodlight-l" aria-hidden="true"></div>
+<div class="floodlight floodlight-r" aria-hidden="true"></div>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="title-block">
+      <div class="kicker">FIFA World Cup · United 2026 · Jun 11 — Jul 19</div>
+      <h1>WC<span class="accent">26</span> <span class="thin">/</span> THE POOL</h1>
+      <div class="subkicker">8 owners · 48 teams · 104 matches · <span class="gold">$400 on the line</span></div>
+    </div>
+    <div class="next-match" id="nextMatch" hidden>
+      <div class="nm-label" id="nmLabel">NEXT MATCH</div>
+      <div class="nm-teams" id="nmTeams"></div>
+      <div class="nm-count" id="nmCount"></div>
+    </div>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-view="schedule">Schedule</button>
+  <button class="tab" data-view="groups">Groups</button>
+  <button class="tab" data-view="bracket">Bracket</button>
+  <button class="tab" data-view="owners">Owners</button>
+  <button class="tab" data-view="payouts">Payouts</button>
+  <div class="tab-spacer"></div>
+  <div class="data-status" id="dataStatus" title="Live results feed">
+    <span class="dot" id="statusDot"></span><span id="statusText">snapshot</span>
+    <button class="refresh-btn" id="refreshBtn" title="Refresh live results">↻</button>
+  </div>
+</nav>
+
+<main>
+  <!-- ============ SCHEDULE ============ -->
+  <section class="view" id="view-schedule">
+    <div class="filterbar">
+      <select id="fOwner" class="ctl"><option value="">All owners</option></select>
+      <select id="fTeam" class="ctl"><option value="">All teams</option></select>
+      <select id="fGroup" class="ctl"><option value="">All groups</option></select>
+      <select id="fCity" class="ctl"><option value="">All cities</option></select>
+      <select id="fTz" class="ctl"></select>
+      <label class="toggle"><input type="checkbox" id="fUpcoming"><span>Upcoming only</span></label>
+      <button class="ctl btn" id="clearFilters">Clear</button>
+      <button class="ctl btn btn-ics" id="icsBtn" title="Download the currently filtered matches as a calendar file">⤓ .ics</button>
+    </div>
+    <div id="scheduleList"></div>
+  </section>
+
+  <!-- ============ GROUPS ============ -->
+  <section class="view" id="view-groups" hidden>
+    <p class="view-note">Top 2 per group advance (and earn <span class="gold">$5</span> each for their owner) · 8 best third-placed teams also advance, but earn nothing. <span class="legend"><span class="q-chip q1">advancing 1st–2nd</span><span class="q-chip q3">best-3rd spot</span></span></p>
+    <div class="group-grid" id="groupGrid"></div>
+  </section>
+
+  <!-- ============ BRACKET ============ -->
+  <section class="view" id="view-bracket" hidden>
+    <p class="view-note">Round of 32 → Final · slots fill automatically as groups close and results land.</p>
+    <div class="bracket-scroll"><div class="bracket" id="bracket"></div></div>
+    <div class="bracket-extras" id="bracketExtras"></div>
+  </section>
+
+  <!-- ============ OWNERS ============ -->
+  <section class="view" id="view-owners" hidden>
+    <div class="owner-grid" id="ownerGrid"></div>
+  </section>
+
+  <!-- ============ PAYOUTS ============ -->
+  <section class="view" id="view-payouts" hidden>
+    <div class="payout-hero">
+      <div class="ph-item"><div class="ph-num">$50</div><div class="ph-lab">buy-in</div></div>
+      <div class="ph-x">×</div>
+      <div class="ph-item"><div class="ph-num">8</div><div class="ph-lab">owners</div></div>
+      <div class="ph-eq">=</div>
+      <div class="ph-item ph-pool"><div class="ph-num gold">$400</div><div class="ph-lab">prize pool</div></div>
+    </div>
+
+    <div class="rules-grid">
+      <div class="rule-card"><div class="rc-pct">30%</div><div class="rc-amt">$5</div><div class="rc-title">Group Stage Survival</div><div class="rc-desc">for every team you own that finishes <b>top 2</b> of its group and advances. (Best-3rd advancers earn $0.)</div><div class="rc-math">24 teams × $5 = $120</div></div>
+      <div class="rule-card"><div class="rc-pct">20%</div><div class="rc-amt">$10</div><div class="rc-title">Quarterfinals · Elite 8</div><div class="rc-desc">for every team you own that reaches the <b>quarterfinals</b>.</div><div class="rc-math">8 teams × $10 = $80</div></div>
+      <div class="rule-card"><div class="rc-pct">30%</div><div class="rc-amt">$30</div><div class="rc-title">Semifinals · Final 4</div><div class="rc-desc">for every team you own that reaches the <b>semifinals</b>.</div><div class="rc-math">4 teams × $30 = $120</div></div>
+      <div class="rule-card"><div class="rc-pct">20%</div><div class="rc-amt">$80</div><div class="rc-title">World Cup Champion</div><div class="rc-desc">bonus if you own the <b>tournament winner</b>.</div><div class="rc-math">1 team × $80 = $80</div></div>
+    </div>
+
+    <div class="jackpot">
+      <div class="jp-label">THE ULTIMATE JACKPOT</div>
+      <div class="jp-line">One team, flawless run — group survival to lifting the trophy — banks <span class="jp-amt">$125</span> on its own <span class="jp-math">($5 + $10 + $30 + $80)</span></div>
+    </div>
+
+    <h2 class="section-h">LIVE LEADERBOARD</h2>
+    <div class="lb-wrap"><table class="lb" id="leaderboard"></table></div>
+    <p class="fineprint" id="lbNote"></p>
+  </section>
+</main>
+
+<footer>
+  <span>Results: <a href="https://www.football-data.org/" target="_blank" rel="noopener">football-data.org</a>, refreshed every 5 min · layout inspired by <a href="https://kingdoggydog.github.io/worldcup2026/" target="_blank" rel="noopener">worldcup2026</a></span>
+  <span id="lastUpdated"></span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

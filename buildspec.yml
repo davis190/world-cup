@@ -1,0 +1,32 @@
+version: 0.2
+
+env:
+  variables:
+    STACK_NAME: worldcup-site
+
+phases:
+  build:
+    commands:
+      # deploy/update infrastructure
+      - aws cloudformation deploy
+          --template-file infra/template.yml
+          --stack-name "$STACK_NAME"
+          --capabilities CAPABILITY_NAMED_IAM
+          --no-fail-on-empty-changeset
+
+      # read stack outputs
+      - export BUCKET=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='SiteBucketName'].OutputValue" --output text)
+      - export DIST_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='DistributionId'].OutputValue" --output text)
+      - export FETCH_FN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='FetchFunctionName'].OutputValue" --output text)
+
+      # publish the static site (data.json is served from DynamoDB via CloudFront, not S3)
+      - aws s3 cp index.html "s3://$BUCKET/index.html" --cache-control "public, max-age=300" --content-type "text/html; charset=utf-8"
+      - aws s3 cp style.css  "s3://$BUCKET/style.css"  --cache-control "public, max-age=300" --content-type "text/css; charset=utf-8"
+      - aws s3 cp app.js     "s3://$BUCKET/app.js"     --cache-control "public, max-age=300" --content-type "text/javascript; charset=utf-8"
+
+      # prime the matches table so /data.json has data immediately
+      - aws lambda invoke --function-name "$FETCH_FN" --cli-read-timeout 60 /tmp/fetch-out.json && cat /tmp/fetch-out.json
+
+  post_build:
+    commands:
+      - aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"

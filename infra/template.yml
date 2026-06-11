@@ -1,0 +1,233 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  worldcup.claytondavis.dev — static site (S3 + CloudFront). World Cup 2026
+  results are polled from football-data.org every 5 minutes by a Lambda that
+  writes data.json into the site bucket. Polling stops automatically after the
+  tournament ends.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: worldcup.claytondavis.dev
+  CertificateArn:
+    Type: String
+    Description: >-
+      ACM certificate ARN for the domain. CloudFront requires the certificate
+      to be issued in us-east-1 — a cert in any other region will fail.
+    Default: "arn:aws:acm:us-east-1:786401693062:certificate/1071401f-a64b-4ad6-80ad-e29d9d64ad11"
+  ApiKeyParameterName:
+    Type: String
+    Description: SSM parameter holding the football-data.org API key.
+    Default: FOOTBALL_DATA_ORG_API_KEY
+  TournamentEndDate:
+    Type: String
+    Description: >-
+      After this UTC timestamp the schedule stops firing (EventBridge Scheduler
+      EndDate) and the Lambda refuses to call the API even if invoked manually.
+      Final is 2026-07-19; default leaves a buffer for post-final corrections.
+    Default: "2026-07-22T00:00:00Z"
+
+Resources:
+  # ---------------- static site ----------------
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-site-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SiteBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${SiteBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # ---------------- poller: football-data.org -> s3://site/data.json ----------------
+  FetchFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: fetch-scores
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${SiteBucket.Arn}/data.json"
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ApiKeyParameterName}"
+
+  FetchFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-fetch-scores"
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt FetchFunctionRole.Arn
+      Environment:
+        Variables:
+          BUCKET: !Ref SiteBucket
+          API_KEY_PARAM: !Ref ApiKeyParameterName
+          STOP_AFTER: !Ref TournamentEndDate
+      Code:
+        ZipFile: |
+          const { S3Client, PutObjectCommand } = require("@aws-sdk/client-s3");
+          const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+          const s3 = new S3Client();
+          const ssm = new SSMClient();
+          let apiKey;
+          exports.handler = async () => {
+            if (Date.now() > Date.parse(process.env.STOP_AFTER)) {
+              console.log("tournament over (STOP_AFTER passed) — skipping API call");
+              return { skipped: true };
+            }
+            apiKey ||= (await ssm.send(new GetParameterCommand({
+              Name: process.env.API_KEY_PARAM, WithDecryption: true }))).Parameter.Value;
+            const res = await fetch("https://api.football-data.org/v4/competitions/WC/matches?season=2026",
+              { headers: { "X-Auth-Token": apiKey } });
+            if (!res.ok) throw new Error("football-data.org HTTP " + res.status);
+            const body = await res.text();
+            const data = JSON.parse(body);
+            if (!Array.isArray(data.matches) || !data.matches.length) throw new Error("no matches in response");
+            await s3.send(new PutObjectCommand({
+              Bucket: process.env.BUCKET,
+              Key: "data.json",
+              Body: body,
+              ContentType: "application/json",
+              CacheControl: "public, max-age=60",
+            }));
+            console.log("wrote data.json with", data.matches.length, "matches");
+            return { count: data.matches.length };
+          };
+
+  SchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: invoke-fetch
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt FetchFunction.Arn
+
+  FetchSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-fetch-every-5min"
+      ScheduleExpression: rate(5 minutes)
+      EndDate: !Ref TournamentEndDate
+      State: ENABLED
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt FetchFunction.Arn
+        RoleArn: !GetAtt SchedulerRole.Arn
+        RetryPolicy:
+          MaximumRetryAttempts: 1
+
+  # ---------------- CloudFront ----------------
+  DataCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AWS::StackName}-data-60s"
+        DefaultTTL: 60
+        MinTTL: 0
+        MaxTTL: 300
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig: { CookieBehavior: none }
+          HeadersConfig: { HeaderBehavior: none }
+          QueryStringsConfig: { QueryStringBehavior: none }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Ref DomainName
+        Aliases:
+          - !Ref DomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref CertificateArn
+          SslSupportMethod: sni-only
+          MinimumProtocolVersion: TLSv1.2_2021
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: site
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: site
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # AWS managed CachingOptimized policy
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors:
+          - PathPattern: data.json
+            TargetOriginId: site
+            ViewerProtocolPolicy: redirect-to-https
+            Compress: true
+            CachePolicyId: !Ref DataCachePolicy
+            AllowedMethods: [GET, HEAD]
+
+Outputs:
+  SiteBucketName:
+    Value: !Ref SiteBucket
+  DistributionId:
+    Value: !Ref Distribution
+  DistributionDomainName:
+    Description: Point worldcup.claytondavis.dev at this (CNAME / Route53 alias).
+    Value: !GetAtt Distribution.DomainName
+  FetchFunctionName:
+    Value: !Ref FetchFunction
