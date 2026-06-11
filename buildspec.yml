@@ -7,6 +7,15 @@ env:
 phases:
   build:
     commands:
+      # a stack stuck in ROLLBACK_COMPLETE (failed first create) can only be deleted
+      - export STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].StackStatus" --output text 2>/dev/null || echo "NONE")
+      - |
+        if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+          echo "Deleting stack in ROLLBACK_COMPLETE before redeploying"
+          aws cloudformation delete-stack --stack-name "$STACK_NAME"
+          aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+        fi
+
       # deploy/update infrastructure
       - aws cloudformation deploy
           --template-file infra/template.yml
@@ -29,4 +38,10 @@ phases:
 
   post_build:
     commands:
-      - aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+      # skip when the build phase failed before resolving outputs
+      - |
+        if [ -n "$DIST_ID" ] && [ "$DIST_ID" != "None" ]; then
+          aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+        else
+          echo "No distribution id resolved — skipping invalidation"
+        fi

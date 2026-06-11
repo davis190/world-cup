@@ -146,6 +146,9 @@ Resources:
           - Effect: Allow
             Principal: { Service: scheduler.amazonaws.com }
             Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
       Policies:
         - PolicyName: invoke-fetch
           PolicyDocument:
