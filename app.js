@@ -514,7 +514,7 @@ function teamHtml(team, side, extra) {
     return `<div class="m-team ${side}"><span class="tname" style="color:var(--chalk-faint);font-style:italic;font-weight:400">${esc(extra || "TBD")}</span></div>`;
   }
   const t = TEAMS[team];
-  return `<div class="m-team ${side}"><span class="flag">${t.flag}</span><span class="tname">${esc(team)}</span>${ownerTag(team)}</div>`;
+  return `<div class="m-team ${side}"><span class="flag">${t.flag}</span><span class="t-stack"><span class="tname">${esc(team)}</span>${ownerTag(team)}</span></div>`;
 }
 
 /* ================================================================

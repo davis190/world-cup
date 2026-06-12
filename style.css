@@ -107,6 +107,8 @@ select.ctl:focus,.btn:focus{outline:1px solid var(--lime)}
 .m-time .live-tag{color:var(--live);font-weight:700;animation:pulse 1.4s infinite}
 .m-team{display:flex;align-items:center;gap:9px;min-width:0;font-size:17px;font-weight:600}
 .m-team.right{flex-direction:row-reverse;text-align:right}
+.t-stack{display:flex;align-items:center;gap:9px;min-width:0}
+.m-team.right .t-stack{flex-direction:row-reverse}
 .m-team .flag{font-size:21px;flex-shrink:0}
 .m-team .tname{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .m-team.loser{color:var(--chalk-faint)}
@@ -246,7 +248,11 @@ footer{max-width:1280px;margin:0 auto;padding:18px 20px 34px;display:flex;justif
   .match{grid-template-columns:60px 1fr 64px 1fr;grid-template-areas:"time home score away" "meta home score away"}
   .m-meta{grid-column:1 / -1;text-align:left;font-size:11px;margin-top:2px}
   .m-team{font-size:14.5px}
-  .m-team .owner-tag{display:none}
+  .t-stack,.m-team.right .t-stack{flex-direction:column;gap:2px;flex:1}
+  .t-stack{align-items:flex-start}
+  .m-team.right .t-stack{align-items:flex-end}
+  .t-stack .tname{max-width:100%}
+  .m-team .owner-tag{font-size:8.5px;padding:1px 5px}
   .next-match{display:none}
   .group-grid,.owner-grid{grid-template-columns:1fr}
 }
