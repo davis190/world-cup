@@ -123,13 +123,13 @@ Resources:
             const res = await fetch("https://api.football-data.org/v4/competitions/WC/matches?season=2026",
               { headers: { "X-Auth-Token": apiKey } });
             if (!res.ok) throw new Error("football-data.org HTTP " + res.status);
-            const body = await res.text();
-            const data = JSON.parse(body);
+            const data = await res.json();
             if (!Array.isArray(data.matches) || !data.matches.length) throw new Error("no matches in response");
+            data.fetchedAt = new Date().toISOString();
             await s3.send(new PutObjectCommand({
               Bucket: process.env.BUCKET,
               Key: "data.json",
-              Body: body,
+              Body: JSON.stringify(data),
               ContentType: "application/json",
               CacheControl: "public, max-age=60",
             }));

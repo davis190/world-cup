@@ -9,6 +9,10 @@
    The committed data.json is a seed for local development. */
 const FEED_URL = "data.json";
 const LS_KEY = "wc26pool.feed.v1";
+const TOURNAMENT_END = Date.parse("2026-07-22T00:00:00Z");
+const STALE_MS = 15 * 60e3;          // data older than this (during the tournament) = feed broken
+const POLL_FAST = 60e3;              // while a match is live or near kickoff
+const POLL_SLOW = 5 * 60e3;
 
 /* ---------------- owners ---------------- */
 const OWNERS = {
@@ -223,7 +227,9 @@ const MATCH_BY_ID = {}; MATCHES.forEach(m => MATCH_BY_ID[m.id] = m);
 const state = {
   results: { 537327: { status:"FINISHED", h:2, a:0, winner:"HOME_TEAM" } }, // bundled snapshot
   koTeams: {},          // id -> {home, away} display names from live feed
-  feedTime: null,
+  feedTime: null,       // when this browser last fetched successfully
+  dataTime: null,       // fetchedAt stamped into data.json by the backend Lambda
+  fetchTimer: null,
   feedOk: false,
   filters: { owner:"", team:"", group:"", city:"", upcoming:false },
   tz: "local",
@@ -239,6 +245,7 @@ const money = n => "$" + n;
    ================================================================ */
 function applyFeed(json) {
   if (!json || !Array.isArray(json.matches)) return false;
+  state.dataTime = json.fetchedAt ? new Date(json.fetchedAt) : null;
   for (const m of json.matches) {
     if (!MATCH_BY_ID[m.id]) continue;
     const ft = (m.score && m.score.fullTime) || {};
@@ -566,7 +573,9 @@ function renderSchedule(standings) {
     if (done || live) {
       const pen = r.pen && r.pen.home != null ? `<span class="pens">${r.pen.home}–${r.pen.away} pens</span>` :
         (r.duration && r.duration !== "REGULAR" ? `<span class="pens">a.e.t.</span>` : "");
-      center = `<div class="m-score">${r.h ?? "–"}<span class="vs"> : </span>${r.a ?? "–"}${pen}</div>`;
+      // a live match with no score reported yet is, by definition, 0-0
+      const dh = r.h ?? (live ? 0 : "–"), da = r.a ?? (live ? 0 : "–");
+      center = `<div class="m-score">${dh}<span class="vs"> : </span>${da}${pen}</div>`;
     } else {
       center = `<div class="m-score"><span class="vs">vs</span></div>`;
     }
@@ -755,16 +764,42 @@ function renderNextMatch(standings) {
 
 function renderStatus() {
   const dot = $("#statusDot"), txt = $("#statusText");
-  if (state.feedOk && state.feedTime) {
+  const fmt = d => d.toLocaleString([], { month:"short", day:"numeric", hour:"numeric", minute:"2-digit" });
+  if (state.dataTime) {
+    const stale = Date.now() < TOURNAMENT_END && Date.now() - state.dataTime.getTime() > STALE_MS;
+    dot.className = "dot " + (stale ? "err" : "ok");
+    txt.textContent = (stale ? "STALE — data from " : "data ") + fmt(state.dataTime);
+  } else if (state.feedOk) {
     dot.className = "dot ok";
-    txt.textContent = "live · " + state.feedTime.toLocaleTimeString([], { hour:"numeric", minute:"2-digit" });
+    txt.textContent = "connected · no data timestamp";
   } else if (state.feedTime) {
-    dot.className = "dot err"; txt.textContent = "feed stale";
+    dot.className = "dot err"; txt.textContent = "feed unreachable";
   } else {
     dot.className = "dot"; txt.textContent = "snapshot";
   }
-  $("#lastUpdated").textContent = state.feedTime
-    ? "results updated " + state.feedTime.toLocaleString() : "bundled snapshot — refresh for live results";
+  $("#lastUpdated").textContent =
+    (state.dataTime ? "data written " + state.dataTime.toLocaleString() : "no backend timestamp yet") +
+    (state.feedTime ? " · checked " + state.feedTime.toLocaleTimeString([], { hour:"numeric", minute:"2-digit" }) : "");
+}
+
+/* poll fast while a match is live, imminent, or possibly lagging in the feed */
+function fastPollNeeded() {
+  const now = Date.now();
+  for (const m of MATCHES) {
+    const r = state.results[m.id];
+    if (isLive(r)) return true;
+    if (isDone(r)) continue;
+    const ko = new Date(m.utc).getTime();
+    if (now > ko - 10 * 60e3 && now < ko + 3 * 3600e3) return true;
+  }
+  return false;
+}
+function scheduleNextFetch() {
+  clearTimeout(state.fetchTimer);
+  state.fetchTimer = setTimeout(async () => {
+    if (!document.hidden) await fetchFeed(false);
+    scheduleNextFetch();
+  }, fastPollNeeded() ? POLL_FAST : POLL_SLOW);
 }
 
 /* ================================================================
@@ -859,10 +894,12 @@ if (typeof document !== "undefined") {
   initControls();
   loadCachedFeed();
   renderAll();
-  fetchFeed(false);
+  fetchFeed(false).then(scheduleNextFetch);
   setInterval(() => renderNextMatch(window.__standings || computeStandings()), 1000);
-  setInterval(() => { if (!document.hidden) fetchFeed(false); }, 5 * 60 * 1000);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) fetchFeed(false); });
+  setInterval(renderStatus, 30e3); // re-evaluate staleness even with no new fetch
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) fetchFeed(false).then(scheduleNextFetch);
+  });
 }
 
 /* node test hook */
