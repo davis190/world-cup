@@ -29,9 +29,11 @@ phases:
       - export FETCH_FN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='FetchFunctionName'].OutputValue" --output text)
 
       # publish the static site (data.json is served from DynamoDB via CloudFront, not S3)
-      - aws s3 cp index.html "s3://$BUCKET/index.html" --cache-control "public, max-age=300" --content-type "text/html; charset=utf-8"
-      - aws s3 cp style.css  "s3://$BUCKET/style.css"  --cache-control "public, max-age=300" --content-type "text/css; charset=utf-8"
-      - aws s3 cp app.js     "s3://$BUCKET/app.js"     --cache-control "public, max-age=300" --content-type "text/javascript; charset=utf-8"
+      # short browser cache so code changes reach already-open tabs quickly;
+      # CloudFront still shields S3 from the traffic
+      - aws s3 cp index.html "s3://$BUCKET/index.html" --cache-control "public, max-age=60" --content-type "text/html; charset=utf-8"
+      - aws s3 cp style.css  "s3://$BUCKET/style.css"  --cache-control "public, max-age=60" --content-type "text/css; charset=utf-8"
+      - aws s3 cp app.js     "s3://$BUCKET/app.js"     --cache-control "public, max-age=60" --content-type "text/javascript; charset=utf-8"
 
       # prime the matches table so /data.json has data immediately
       - aws lambda invoke --function-name "$FETCH_FN" --cli-read-timeout 60 /tmp/fetch-out.json && cat /tmp/fetch-out.json
