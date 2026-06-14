@@ -241,7 +241,16 @@ table.lb{width:100%;border-collapse:collapse;background:var(--panel);border:1px 
 
 /* ---------- rosters ---------- */
 .roster-hint{font-family:var(--f-mono);font-size:12px;color:var(--chalk-faint);align-self:center}
-.roster-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px}
+/* playing-now banner */
+.pn-section{margin-bottom:22px}
+.pn-label{font-family:var(--f-mono);font-size:10px;letter-spacing:.25em;color:var(--live);
+  text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.pn-label::after{content:"";flex:1;height:1px;background:rgba(255,77,94,.3)}
+.pn-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;align-items:start}
+.pn-card{cursor:default;border-color:rgba(255,77,94,.35) !important}
+.pn-card:hover{border-color:rgba(255,77,94,.6) !important}
+/* main roster grid — align-items:start prevents siblings stretching to match tallest card */
+.roster-main-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px;align-items:start}
 .roster-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
   overflow:hidden;border-top:3px solid var(--oc,var(--lime));cursor:pointer;
   transition:border-color .15s;animation:rise .35s ease both}

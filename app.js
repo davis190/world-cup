@@ -284,6 +284,7 @@ const state = {
   fetchTimer: null,
   feedOk: false,
   rosterOwner: "",      // owner filter on Rosters tab
+  rosterGroup: "",      // group filter on Rosters tab
   filters: { owner:"", team:"", group:"", city:"", upcoming:false },
   tz: "local",
   view: "schedule",
@@ -898,7 +899,10 @@ function downloadIcs(standings) {
 const rosterCache = {};   // team name -> [{no, pos, name, club}] | {error}
 const expandedRosters = new Set();
 
-const POS_ORDER = { GK:1, DF:2, MF:3, FW:4 };
+// single-letter codes appear on some Wikipedia pages (e.g. G, D, M, F)
+const POS_ORDER = { GK:1, G:1, DF:2, D:2, MF:3, M:3, FW:4, F:4, AT:4 };
+const POS_LABEL = { GK:"Goalkeepers", G:"Goalkeepers", DF:"Defenders", D:"Defenders",
+                    MF:"Midfielders", M:"Midfielders", FW:"Forwards", F:"Forwards", AT:"Forwards" };
 
 async function fetchRoster(team) {
   if (rosterCache[team]) return rosterCache[team];
@@ -942,20 +946,31 @@ function parseSquadHtml(html) {
     if (headerCells.length < 3) continue;
     const ths = headerCells.map(th => th.textContent.trim().toLowerCase());
     const noIdx   = ths.findIndex(h => /^no\.?$/.test(h));
-    const posIdx  = ths.findIndex(h => /^pos\.?$/.test(h));
+    const posIdx  = ths.findIndex(h => /^pos/i.test(h));
     const nameIdx = ths.findIndex(h => /player|name/i.test(h));
     const clubIdx = ths.findIndex(h => /club/i.test(h));
     if (nameIdx === -1 || clubIdx === -1) continue;
 
+    // tracks position when table uses section-header rows instead of a Pos. column
+    let sectionPos = "?";
     for (const row of table.querySelectorAll("tbody tr")) {
-      if (!row.querySelector("td")) continue; // skip header-only & group-header rows
+      if (!row.querySelector("td")) {
+        // position-group header row (e.g. <th colspan="7">Goalkeepers</th>)
+        const hdr = row.querySelector("th")?.textContent.toLowerCase() || "";
+        if (/goal/i.test(hdr))                         sectionPos = "GK";
+        else if (/defend/i.test(hdr))                  sectionPos = "DF";
+        else if (/midfield/i.test(hdr))                sectionPos = "MF";
+        else if (/forward|attack|striker/i.test(hdr))  sectionPos = "FW";
+        continue;
+      }
       const cells = [...row.querySelectorAll("td, th")]; // th[scope=row] holds player name
       if (cells.length < 3) continue;
       const get = i => i >= 0 && cells[i] ? cells[i] : null;
       const txt = el => el?.textContent.replace(/\[.*?\]/g, "").trim() || "";
       const link = el => el?.querySelector("a")?.textContent.replace(/\[.*?\]/g, "").trim() || txt(el);
       const no   = txt(get(noIdx)) || "—";
-      const pos  = txt(get(posIdx)).toUpperCase().slice(0, 2) || "?";
+      const rawPos = posIdx >= 0 ? txt(get(posIdx)).toUpperCase().replace(/[^A-Z]/g, "") : "";
+      const pos  = rawPos.slice(0, 2) || sectionPos;
       const name = link(get(nameIdx));
       const club = link(get(clubIdx));
       if (name && name.length > 1) players.push({ no, pos, name, club });
@@ -966,42 +981,84 @@ function parseSquadHtml(html) {
 }
 
 function renderRosters() {
+  const st = window.__standings || computeStandings();
+  let html = "";
+
+  // --- Playing Now ---
+  const liveMatches = MATCHES.filter(m => isLive(state.results[m.id]));
+  if (liveMatches.length) {
+    const liveTeams = [];
+    for (const m of liveMatches) {
+      let home = m.home, away = m.away;
+      if (m.stage !== "GROUP_STAGE") {
+        const t = resolvedTeams(m.slot, st);
+        home = t.home; away = t.away;
+      }
+      if (home && TEAMS[home]) liveTeams.push(home);
+      if (away && TEAMS[away]) liveTeams.push(away);
+    }
+    if (liveTeams.length) {
+      // kick off fetches; re-render when each lands
+      for (const team of liveTeams) {
+        if (!rosterCache[team]) {
+          fetchRoster(team).then(() => { if (state.view === "rosters") renderRosters(); });
+        }
+      }
+      const pnCards = liveTeams.map(team => {
+        const t = TEAMS[team]; const o = OWNERS[t.owner];
+        return `<div class="roster-card pn-card" data-team="${esc(team)}" style="--oc:${o.color}">
+          <div class="rc-h"><span class="flag r-flag">${t.flag}</span>
+            <span class="r-name">${esc(team)}</span>
+            <span class="r-meta">Group ${t.group} · <span style="color:${o.color}">${t.owner}</span></span>
+          </div>${renderRosterBody(team, rosterCache[team])}</div>`;
+      }).join("");
+      html += `<div class="pn-section">
+        <div class="pn-label">⚽ PLAYING NOW</div>
+        <div class="pn-grid">${pnCards}</div>
+      </div>`;
+    }
+  }
+
+  // --- Main grid (alphabetical, filtered) ---
   const teams = Object.keys(TEAMS)
     .filter(t => !state.rosterOwner || TEAMS[t].owner === state.rosterOwner)
-    .sort((a, b) => TEAMS[a].group.localeCompare(TEAMS[b].group) || TEAMS[a].seed - TEAMS[b].seed);
+    .filter(t => !state.rosterGroup  || TEAMS[t].group  === state.rosterGroup)
+    .sort((a, b) => a.localeCompare(b));
 
-  $("#rosterGrid").innerHTML = teams.map(team => {
-    const t = TEAMS[team];
-    const o = OWNERS[t.owner];
+  const cards = teams.map((team, i) => {
+    const t = TEAMS[team]; const o = OWNERS[t.owner];
     const expanded = expandedRosters.has(team);
-    const cached = rosterCache[team];
-    return `<div class="roster-card${expanded ? " expanded" : ""}" data-team="${esc(team)}" style="--oc:${o.color}">
+    return `<div class="roster-card${expanded ? " expanded" : ""}" data-team="${esc(team)}"
+        style="--oc:${o.color};animation-delay:${Math.min(i, 16) * 25}ms">
       <div class="rc-h">
         <span class="flag r-flag">${t.flag}</span>
         <span class="r-name">${esc(team)}</span>
         <span class="r-meta">Group ${t.group} · <span style="color:${o.color}">${t.owner}</span></span>
         <span class="r-chevron">${expanded ? "▲" : "▼"}</span>
       </div>
-      ${expanded ? renderRosterBody(team, cached) : ""}
+      ${expanded ? renderRosterBody(team, rosterCache[team]) : ""}
     </div>`;
   }).join("");
+
+  html += `<div class="roster-main-grid">${cards}</div>`;
+  $("#rosterGrid").innerHTML = html;
 }
 
 function renderRosterBody(team, cached) {
   if (!cached) return `<div class="rc-body"><div class="rc-loading">Loading squad…</div></div>`;
   if (cached.error) return `<div class="rc-body"><div class="rc-err">${esc(cached.error)}</div></div>`;
 
+  // normalise all positions to the canonical 2-letter form for grouping
+  const norm = pos => ({ G:"GK", D:"DF", M:"MF", F:"FW", AT:"FW" }[pos] || (POS_ORDER[pos] ? pos : "?"));
   const byPos = { GK:[], DF:[], MF:[], FW:[], "?":[] };
-  for (const p of cached) {
-    const key = POS_ORDER[p.pos] ? p.pos : "?";
-    byPos[key].push(p);
-  }
+  for (const p of cached) byPos[norm(p.pos)].push(p);
+  const POS_CSS = { GK:"gk", DF:"df", MF:"mf", FW:"fw" };
   const rows = Object.entries(byPos)
     .filter(([, arr]) => arr.length)
     .sort(([a], [b]) => (POS_ORDER[a] || 9) - (POS_ORDER[b] || 9))
     .map(([pos, arr]) => `
       <div class="pos-group">
-        <div class="pos-label pos-${pos.toLowerCase()}">${pos === "?" ? "Other" : pos === "GK" ? "Goalkeepers" : pos === "DF" ? "Defenders" : pos === "MF" ? "Midfielders" : "Forwards"}</div>
+        <div class="pos-label pos-${POS_CSS[pos] || "other"}">${POS_LABEL[pos] || "Other"}</div>
         ${arr.map(p => `<div class="player-row"><span class="p-no">${p.no}</span><span class="p-name">${esc(p.name)}</span><span class="p-club">${esc(p.club)}</span></div>`).join("")}
       </div>`).join("");
   const wikiSlug = WIKI[team];
@@ -1072,18 +1129,20 @@ function initControls() {
     document.querySelectorAll(".view").forEach(v => v.hidden = v.id !== "view-" + state.view);
   }));
 
-  // rosters owner filter
+  // rosters filters
   $("#rOwner").innerHTML += Object.keys(OWNERS).map(o => `<option>${o}</option>`).join("");
   $("#rOwner").addEventListener("change", e => {
-    state.rosterOwner = e.target.value;
-    expandedRosters.clear();
-    renderRosters();
+    state.rosterOwner = e.target.value; expandedRosters.clear(); renderRosters();
+  });
+  $("#rGroup").innerHTML += GROUPS.map(g => `<option value="${g}">Group ${g}</option>`).join("");
+  $("#rGroup").addEventListener("change", e => {
+    state.rosterGroup = e.target.value; expandedRosters.clear(); renderRosters();
   });
 
-  // roster card click — event delegation
+  // roster card click — skip pn-cards (always open while live)
   $("#rosterGrid").addEventListener("click", e => {
     const card = e.target.closest(".roster-card");
-    if (card) toggleRoster(card.dataset.team);
+    if (card && !card.classList.contains("pn-card")) toggleRoster(card.dataset.team);
   });
 }
 
