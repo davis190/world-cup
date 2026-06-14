@@ -36,6 +36,7 @@
   <button class="tab" data-view="bracket">Bracket</button>
   <button class="tab" data-view="owners">Owners</button>
   <button class="tab" data-view="payouts">Payouts</button>
+  <button class="tab" data-view="rosters">Rosters</button>
   <div class="tab-spacer"></div>
   <div class="data-status" id="dataStatus" title="Live results feed">
     <span class="dot" id="statusDot"></span><span id="statusText">snapshot</span>
@@ -75,6 +76,15 @@
   <!-- ============ OWNERS ============ -->
   <section class="view" id="view-owners" hidden>
     <div class="owner-grid" id="ownerGrid"></div>
+  </section>
+
+  <!-- ============ ROSTERS ============ -->
+  <section class="view" id="view-rosters" hidden>
+    <div class="filterbar">
+      <select id="rOwner" class="ctl"><option value="">All owners</option></select>
+      <span class="roster-hint">Click a team card to load its 26-man squad from Wikipedia</span>
+    </div>
+    <div class="roster-grid" id="rosterGrid"></div>
   </section>
 
   <!-- ============ PAYOUTS ============ -->

@@ -82,6 +82,58 @@ const TEAMS = {
 const FD_TO_DISPLAY = {};
 for (const [name, t] of Object.entries(TEAMS)) FD_TO_DISPLAY[t.fd] = name;
 
+/* ---------------- Wikipedia article slugs (for roster fetch) ---------------- */
+const WIKI = {
+  "Mexico":               "Mexico_national_football_team",
+  "South Africa":         "South_Africa_national_football_team",
+  "South Korea":          "South_Korea_national_football_team",
+  "Czechia":              "Czech_Republic_national_football_team",
+  "Canada":               "Canada_national_soccer_team",
+  "Bosnia & Herzegovina": "Bosnia_and_Herzegovina_national_football_team",
+  "Qatar":                "Qatar_national_football_team",
+  "Switzerland":          "Switzerland_national_football_team",
+  "Brazil":               "Brazil_national_football_team",
+  "Morocco":              "Morocco_national_football_team",
+  "Haiti":                "Haiti_national_football_team",
+  "Scotland":             "Scotland_national_football_team",
+  "USA":                  "United_States_national_soccer_team",
+  "Paraguay":             "Paraguay_national_football_team",
+  "Australia":            "Australia_national_football_team",
+  "Türkiye":              "Turkey_national_football_team",
+  "Germany":              "Germany_national_football_team",
+  "Curaçao":              "Cura%C3%A7ao_national_football_team",
+  "Ivory Coast":          "Ivory_Coast_national_football_team",
+  "Ecuador":              "Ecuador_national_football_team",
+  "Netherlands":          "Netherlands_national_football_team",
+  "Japan":                "Japan_national_football_team",
+  "Sweden":               "Sweden_national_football_team",
+  "Tunisia":              "Tunisia_national_football_team",
+  "Belgium":              "Belgium_national_football_team",
+  "Egypt":                "Egypt_national_football_team",
+  "Iran":                 "Iran_national_football_team",
+  "New Zealand":          "New_Zealand_national_football_team",
+  "Spain":                "Spain_national_football_team",
+  "Cape Verde":           "Cape_Verde_national_football_team",
+  "Saudi Arabia":         "Saudi_Arabia_national_football_team",
+  "Uruguay":              "Uruguay_national_football_team",
+  "France":               "France_national_football_team",
+  "Senegal":              "Senegal_national_football_team",
+  "Iraq":                 "Iraq_national_football_team",
+  "Norway":               "Norway_national_football_team",
+  "Argentina":            "Argentina_national_football_team",
+  "Algeria":              "Algeria_national_football_team",
+  "Austria":              "Austria_national_football_team",
+  "Jordan":               "Jordan_national_football_team",
+  "Portugal":             "Portugal_national_football_team",
+  "DR Congo":             "Democratic_Republic_of_the_Congo_national_football_team",
+  "Uzbekistan":           "Uzbekistan_national_football_team",
+  "Colombia":             "Colombia_national_football_team",
+  "England":              "England_national_football_team",
+  "Croatia":              "Croatia_national_football_team",
+  "Ghana":                "Ghana_national_football_team",
+  "Panama":               "Panama_national_football_team",
+};
+
 const GROUPS = "ABCDEFGHIJKL".split("");
 const GROUP_TEAMS = {};
 for (const g of GROUPS) GROUP_TEAMS[g] = Object.keys(TEAMS).filter(n => TEAMS[n].group === g);
@@ -231,6 +283,7 @@ const state = {
   dataTime: null,       // fetchedAt stamped into data.json by the backend Lambda
   fetchTimer: null,
   feedOk: false,
+  rosterOwner: "",      // owner filter on Rosters tab
   filters: { owner:"", team:"", group:"", city:"", upcoming:false },
   tz: "local",
   view: "schedule",
@@ -840,6 +893,135 @@ function downloadIcs(standings) {
 }
 
 /* ================================================================
+   rosters — lazy Wikipedia fetch per team
+   ================================================================ */
+const rosterCache = {};   // team name -> [{no, pos, name, club}] | {error}
+const expandedRosters = new Set();
+
+const POS_ORDER = { GK:1, DF:2, MF:3, FW:4 };
+
+async function fetchRoster(team) {
+  if (rosterCache[team]) return rosterCache[team];
+  const slug = WIKI[team];
+  if (!slug) { rosterCache[team] = { error:"No Wikipedia mapping" }; return rosterCache[team]; }
+  try {
+    // step 1: find "Current squad" section index
+    const secRes = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=parse&page=${slug}&prop=sections&format=json&origin=*`);
+    const secData = await secRes.json();
+    if (!secData.parse) { rosterCache[team] = { error:"Page not found on Wikipedia" }; return rosterCache[team]; }
+    const sec = secData.parse.sections.find(s => /current squad/i.test(s.line));
+    if (!sec) { rosterCache[team] = { error:"No 'Current squad' section found" }; return rosterCache[team]; }
+
+    // step 2: fetch that section's HTML
+    const htmlRes = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=parse&page=${slug}&section=${sec.index}&prop=text&format=json&origin=*`);
+    const htmlData = await htmlRes.json();
+    const html = htmlData.parse?.text?.["*"];
+    if (!html) { rosterCache[team] = { error:"Empty section" }; return rosterCache[team]; }
+
+    const players = parseSquadHtml(html);
+    rosterCache[team] = players.length ? players : { error:"Could not parse squad table" };
+  } catch (e) {
+    rosterCache[team] = { error: e.message };
+  }
+  return rosterCache[team];
+}
+
+function parseSquadHtml(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const players = [];
+
+  for (const table of doc.querySelectorAll("table.wikitable")) {
+    // Use the row with the most <th> cells as the column header row.
+    // This skips title rows like <th colspan="7">2026 FIFA World Cup squad</th>
+    // and position-group rows like <th colspan="7">Goalkeepers</th>.
+    const headerCells = [...table.querySelectorAll("tr")]
+      .map(r => [...r.querySelectorAll("th")])
+      .reduce((best, cells) => cells.length > best.length ? cells : best, []);
+    if (headerCells.length < 3) continue;
+    const ths = headerCells.map(th => th.textContent.trim().toLowerCase());
+    const noIdx   = ths.findIndex(h => /^no\.?$/.test(h));
+    const posIdx  = ths.findIndex(h => /^pos\.?$/.test(h));
+    const nameIdx = ths.findIndex(h => /player|name/i.test(h));
+    const clubIdx = ths.findIndex(h => /club/i.test(h));
+    if (nameIdx === -1 || clubIdx === -1) continue;
+
+    for (const row of table.querySelectorAll("tbody tr")) {
+      if (!row.querySelector("td")) continue; // skip header-only & group-header rows
+      const cells = [...row.querySelectorAll("td, th")]; // th[scope=row] holds player name
+      if (cells.length < 3) continue;
+      const get = i => i >= 0 && cells[i] ? cells[i] : null;
+      const txt = el => el?.textContent.replace(/\[.*?\]/g, "").trim() || "";
+      const link = el => el?.querySelector("a")?.textContent.replace(/\[.*?\]/g, "").trim() || txt(el);
+      const no   = txt(get(noIdx)) || "—";
+      const pos  = txt(get(posIdx)).toUpperCase().slice(0, 2) || "?";
+      const name = link(get(nameIdx));
+      const club = link(get(clubIdx));
+      if (name && name.length > 1) players.push({ no, pos, name, club });
+    }
+    if (players.length) break; // first matching table is the squad
+  }
+  return players;
+}
+
+function renderRosters() {
+  const teams = Object.keys(TEAMS)
+    .filter(t => !state.rosterOwner || TEAMS[t].owner === state.rosterOwner)
+    .sort((a, b) => TEAMS[a].group.localeCompare(TEAMS[b].group) || TEAMS[a].seed - TEAMS[b].seed);
+
+  $("#rosterGrid").innerHTML = teams.map(team => {
+    const t = TEAMS[team];
+    const o = OWNERS[t.owner];
+    const expanded = expandedRosters.has(team);
+    const cached = rosterCache[team];
+    return `<div class="roster-card${expanded ? " expanded" : ""}" data-team="${esc(team)}" style="--oc:${o.color}">
+      <div class="rc-h">
+        <span class="flag r-flag">${t.flag}</span>
+        <span class="r-name">${esc(team)}</span>
+        <span class="r-meta">Group ${t.group} · <span style="color:${o.color}">${t.owner}</span></span>
+        <span class="r-chevron">${expanded ? "▲" : "▼"}</span>
+      </div>
+      ${expanded ? renderRosterBody(team, cached) : ""}
+    </div>`;
+  }).join("");
+}
+
+function renderRosterBody(team, cached) {
+  if (!cached) return `<div class="rc-body"><div class="rc-loading">Loading squad…</div></div>`;
+  if (cached.error) return `<div class="rc-body"><div class="rc-err">${esc(cached.error)}</div></div>`;
+
+  const byPos = { GK:[], DF:[], MF:[], FW:[], "?":[] };
+  for (const p of cached) {
+    const key = POS_ORDER[p.pos] ? p.pos : "?";
+    byPos[key].push(p);
+  }
+  const rows = Object.entries(byPos)
+    .filter(([, arr]) => arr.length)
+    .sort(([a], [b]) => (POS_ORDER[a] || 9) - (POS_ORDER[b] || 9))
+    .map(([pos, arr]) => `
+      <div class="pos-group">
+        <div class="pos-label pos-${pos.toLowerCase()}">${pos === "?" ? "Other" : pos === "GK" ? "Goalkeepers" : pos === "DF" ? "Defenders" : pos === "MF" ? "Midfielders" : "Forwards"}</div>
+        ${arr.map(p => `<div class="player-row"><span class="p-no">${p.no}</span><span class="p-name">${esc(p.name)}</span><span class="p-club">${esc(p.club)}</span></div>`).join("")}
+      </div>`).join("");
+  const wikiSlug = WIKI[team];
+  const wikiUrl = wikiSlug ? `https://en.wikipedia.org/wiki/${wikiSlug}#Current_squad` : "#";
+  return `<div class="rc-body">${rows}<a class="rc-wiki" href="${wikiUrl}" target="_blank" rel="noopener">Wikipedia ↗</a></div>`;
+}
+
+async function toggleRoster(team) {
+  if (expandedRosters.has(team)) {
+    expandedRosters.delete(team);
+    renderRosters();
+    return;
+  }
+  expandedRosters.add(team);
+  renderRosters();                          // show "Loading…" immediately
+  await fetchRoster(team);
+  if (expandedRosters.has(team)) renderRosters(); // re-render with data
+}
+
+/* ================================================================
    wiring
    ================================================================ */
 function renderAll() {
@@ -850,6 +1032,7 @@ function renderAll() {
   renderBracket(standings);
   renderOwners(pool);
   renderPayouts(pool, standings);
+  renderRosters();
   renderNextMatch(standings);
   renderStatus();
   window.__standings = standings; // for next-match ticker reuse
@@ -888,6 +1071,20 @@ function initControls() {
     state.view = btn.dataset.view;
     document.querySelectorAll(".view").forEach(v => v.hidden = v.id !== "view-" + state.view);
   }));
+
+  // rosters owner filter
+  $("#rOwner").innerHTML += Object.keys(OWNERS).map(o => `<option>${o}</option>`).join("");
+  $("#rOwner").addEventListener("change", e => {
+    state.rosterOwner = e.target.value;
+    expandedRosters.clear();
+    renderRosters();
+  });
+
+  // roster card click — event delegation
+  $("#rosterGrid").addEventListener("click", e => {
+    const card = e.target.closest(".roster-card");
+    if (card) toggleRoster(card.dataset.team);
+  });
 }
 
 if (typeof document !== "undefined") {
