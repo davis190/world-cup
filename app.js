@@ -285,6 +285,7 @@ const state = {
   feedOk: false,
   rosterOwner: "",      // owner filter on Rosters tab
   rosterGroup: "",      // group filter on Rosters tab
+  odds: {},             // match id (string) -> { home, away, draw, bk, closing, t }
   filters: { owner:"", team:"", group:"", city:"", upcoming:false },
   tz: "local",
   view: "schedule",
@@ -637,12 +638,27 @@ function renderSchedule(standings) {
     if (done && r.winner === "HOME_TEAM") aCls = "loser";
     if (done && r.winner === "AWAY_TEAM") hCls = "loser";
     const tag = m.stage === "GROUP_STAGE" ? `Group ${m.group}` : `${STAGE_LABEL[m.stage]} · M${m.num}`;
+    const o = state.odds[String(m.id)];
+    let oddsHtml = "";
+    if (o && (o.home != null || o.away != null)) {
+      const fmt = p => p == null ? "—" : p > 0 ? `+${p}` : `${p}`;
+      oddsHtml = `<div class="m-odds">
+        ${o.closing ? `<span class="o-lock" title="Closing line">🔒</span>` : `<span class="o-tag">pre-match</span>`}
+        <span class="o-price${o.home < 0 ? " fav" : ""}">${fmt(o.home)}</span>
+        <span class="o-sep">·</span>
+        <span class="o-draw">Draw ${fmt(o.draw)}</span>
+        <span class="o-sep">·</span>
+        <span class="o-price${o.away < 0 ? " fav" : ""}">${fmt(o.away)}</span>
+        <span class="o-bk">${esc(o.bk || "")}</span>
+      </div>`;
+    }
     dayBuf.push(`<div class="match${live ? " is-live" : ""}">
       <div class="m-time">${live ? `<span class="live-tag">● LIVE</span>` : fmtTime(m.utc)}</div>
       ${teamHtml(home, `right ${hCls}`, hDesc)}
       ${center}
       ${teamHtml(away, aCls, aDesc)}
       <div class="m-meta"><span class="grp">${tag}</span><br>${V[m.v][0]} · ${V[m.v][1]}</div>
+      ${oddsHtml}
     </div>`);
   }
   flush();
@@ -1079,6 +1095,21 @@ async function toggleRoster(team) {
 }
 
 /* ================================================================
+   odds
+   ================================================================ */
+async function fetchOddsData() {
+  try {
+    const res = await fetch("odds.json?_=" + Math.floor(Date.now() / 60000), { cache: "no-store" });
+    if (!res.ok) return;
+    const json = await res.json();
+    if (json?.matches) {
+      state.odds = json.matches;
+      if (state.view === "schedule") renderSchedule(window.__standings || computeStandings());
+    }
+  } catch (e) { console.warn("odds fetch:", e.message); }
+}
+
+/* ================================================================
    wiring
    ================================================================ */
 function renderAll() {
@@ -1151,10 +1182,12 @@ if (typeof document !== "undefined") {
   loadCachedFeed();
   renderAll();
   fetchFeed(false).then(scheduleNextFetch);
+  fetchOddsData();
+  setInterval(fetchOddsData, 5 * 60e3);
   setInterval(() => renderNextMatch(window.__standings || computeStandings()), 1000);
-  setInterval(renderStatus, 30e3); // re-evaluate staleness even with no new fetch
+  setInterval(renderStatus, 30e3);
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) fetchFeed(false).then(scheduleNextFetch);
+    if (!document.hidden) { fetchFeed(false).then(scheduleNextFetch); fetchOddsData(); }
   });
 }
 

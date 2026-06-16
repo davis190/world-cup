@@ -19,6 +19,11 @@ Parameters:
     Type: String
     Description: SSM parameter holding the football-data.org API key.
     Default: FOOTBALL_DATA_ORG_API_KEY
+  OddsApiKeyParameterName:
+    Type: String
+    Description: SSM parameter holding The-Odds-API key (free tier, 500 req/month).
+    Default: THE-ODDS-API-KEY
+
   TournamentEndDate:
     Type: String
     Description: >-
@@ -173,6 +178,129 @@ Resources:
         RetryPolicy:
           MaximumRetryAttempts: 1
 
+  # ---------------- odds: the-odds-api.com -> s3://site/odds.json ----------------
+  # Strategy (free tier ~500 req/month):
+  #   1. Opening: once per matchday, first run when today's matches aren't in the store
+  #   2. Closing: any match kicking off in next 15 min → 1 request locks all simultaneous games
+  #   3. Backfill: up to 2 historical days per run for finished matches with no odds
+  # Estimated usage: ~110 requests for the full tournament.
+
+  OddsFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: odds-rw
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${SiteBucket.Arn}/data.json"
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${SiteBucket.Arn}/odds.json"
+              - Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${OddsApiKeyParameterName}"
+
+  OddsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-fetch-odds"
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Timeout: 30
+      MemorySize: 256
+      Role: !GetAtt OddsFunctionRole.Arn
+      Environment:
+        Variables:
+          BUCKET: !Ref SiteBucket
+          ODDS_KEY_PARAM: !Ref OddsApiKeyParameterName
+          ODDS_SPORT: soccer_fifa_world_cup
+          STOP_AFTER: !Ref TournamentEndDate
+      Code:
+        ZipFile: |
+          const {S3Client,PutObjectCommand,GetObjectCommand} = require("@aws-sdk/client-s3");
+          const {SSMClient,GetParameterCommand} = require("@aws-sdk/client-ssm");
+          const s3 = new S3Client(), ssm = new SSMClient();
+          let apiKey;
+          const A = {"Czech Republic":"Czechia","Cote d'Ivoire":"Ivory Coast","Côte d'Ivoire":"Ivory Coast","Bosnia and Herzegovina":"Bosnia & Herzegovina","Turkey":"Türkiye","United States":"USA","Congo, DR":"DR Congo","Democratic Republic of Congo":"DR Congo"};
+          const norm = n => A[n] || n;
+          const rs = async k => { try { const r = await s3.send(new GetObjectCommand({Bucket:process.env.BUCKET,Key:k})); return JSON.parse(await r.Body.transformToString()); } catch { return null; } };
+          const gk = async () => { if (!apiKey) apiKey = (await ssm.send(new GetParameterCommand({Name:process.env.ODDS_KEY_PARAM,WithDecryption:true}))).Parameter.Value; return apiKey; };
+          const fm = (ev,ms) => ms.find(m => m.homeTeam?.name && Math.abs(new Date(ev.commence_time)-new Date(m.utcDate))<3600e3 && (norm(ev.home_team)===norm(m.homeTeam.name)||norm(ev.away_team)===norm(m.awayTeam.name)));
+          const ex = (ev,m) => { const bk=ev.bookmakers?.find(b=>b.key==="pinnacle")||ev.bookmakers?.[0]; const h=bk?.markets?.find(x=>x.key==="h2h"); if(!h)return null; const o={bk:bk.title,t:new Date().toISOString()}; for(const x of h.outcomes) if(norm(x.name)===norm(m.homeTeam.name))o.home=x.price; else if(norm(x.name)===norm(m.awayTeam.name))o.away=x.price; else o.draw=x.price; return(o.home!=null&&o.away!=null)?o:null; };
+          const af = async u => { const r=await fetch(u); if(!r.ok){console.error("odds",r.status);return null;} return r.json(); };
+          exports.handler = async () => {
+            if (Date.now()>Date.parse(process.env.STOP_AFTER)) return {skipped:true};
+            const [data,stored] = await Promise.all([rs("data.json"),rs("odds.json")]);
+            if (!data?.matches?.length) return {error:"no data"};
+            const ms=data.matches, now=Date.now();
+            const od=stored||{matches:{},fetchedDates:[]};
+            const today=new Date().toISOString().slice(0,10);
+            const sp=process.env.ODDS_SPORT||"soccer_fifa_world_cup";
+            const base="https://api.the-odds-api.com/v4";
+            let dirty=false;
+            const cIds=new Set(ms.filter(m=>{const k=new Date(m.utcDate).getTime();return k-now>0&&k-now<15*60e3&&!od.matches[m.id]?.closing;}).map(m=>String(m.id)));
+            const needOpen=!od.fetchedDates.includes(today)&&ms.some(m=>m.utcDate.startsWith(today));
+            if (cIds.size||needOpen) {
+              const evs=await af(`${base}/sports/${sp}/odds/?apiKey=${await gk()}&regions=us,uk&markets=h2h&oddsFormat=american`);
+              if (evs) { dirty=true; for(const ev of evs){const m=fm(ev,ms);if(!m)continue;const o=ex(ev,m);if(!o)continue;if(cIds.has(String(m.id)))o.closing=true;else o.opening=true;od.matches[m.id]=o;} if(needOpen)od.fetchedDates.push(today); }
+            }
+            const md=[...new Set(ms.filter(m=>m.status==="FINISHED"&&!od.matches[m.id]).map(m=>m.utcDate.slice(0,10)))].filter(d=>!od.fetchedDates.includes(d)).slice(0,2);
+            for(const d of md){
+              const h=await af(`${base}/historical/sports/${sp}/odds/?apiKey=${await gk()}&date=${d}T18:00:00Z&regions=us,uk&markets=h2h&oddsFormat=american`);
+              if(h?.data){dirty=true;for(const ev of h.data){const m=fm(ev,ms);if(m&&!od.matches[m.id]){const o=ex(ev,m);if(o){o.closing=true;od.matches[m.id]=o;}}}od.fetchedDates.push(d);}
+            }
+            if(dirty){od.updatedAt=new Date().toISOString();await s3.send(new PutObjectCommand({Bucket:process.env.BUCKET,Key:"odds.json",Body:JSON.stringify(od),ContentType:"application/json",CacheControl:"public, max-age=60"}));}
+            console.log(`odds:${Object.keys(od.matches).length} dirty=${dirty}`);
+            return{count:Object.keys(od.matches).length,dirty};
+          };
+
+  OddsSchedulerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: scheduler.amazonaws.com }
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: invoke-odds
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt OddsFunction.Arn
+
+  OddsSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub "${AWS::StackName}-fetch-odds-every-5min"
+      ScheduleExpression: rate(5 minutes)
+      EndDate: !Ref TournamentEndDate
+      State: ENABLED
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !GetAtt OddsFunction.Arn
+        RoleArn: !GetAtt OddsSchedulerRole.Arn
+        RetryPolicy:
+          MaximumRetryAttempts: 0
+
   # ---------------- CloudFront ----------------
   DataCachePolicy:
     Type: AWS::CloudFront::CachePolicy
@@ -234,3 +362,5 @@ Outputs:
     Value: !GetAtt Distribution.DomainName
   FetchFunctionName:
     Value: !Ref FetchFunction
+  OddsFunctionName:
+    Value: !Ref OddsFunction

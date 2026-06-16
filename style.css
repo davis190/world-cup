@@ -239,6 +239,19 @@ table.lb{width:100%;border-collapse:collapse;background:var(--panel);border:1px 
 .lb tr.leader{background:linear-gradient(90deg, rgba(255,211,77,.07), transparent 60%);box-shadow:inset 3px 0 0 var(--gold)}
 .fineprint{font-family:var(--f-mono);font-size:11px;color:var(--chalk-faint);margin-top:12px;letter-spacing:.03em}
 
+/* ---------- odds ---------- */
+.m-odds{grid-column:1/-1;display:flex;align-items:center;gap:7px;
+  padding:5px 0 2px;border-top:1px dashed var(--line);
+  font-family:var(--f-mono);font-size:11px;color:var(--chalk-dim);flex-wrap:wrap}
+.o-lock{font-size:10px}
+.o-tag{font-size:9px;padding:1px 5px;background:rgba(255,255,255,.06);border-radius:3px;color:var(--chalk-faint)}
+.o-price{letter-spacing:.02em}
+.o-price.fav{color:var(--lime);font-weight:700}
+.o-sep{color:var(--line-2)}
+.o-draw{color:var(--chalk-dim)}
+.o-bk{margin-left:auto;color:var(--chalk-faint);font-size:10px}
+@media(max-width:860px){.o-bk{display:none}}
+
 /* ---------- rosters ---------- */
 .roster-hint{font-family:var(--f-mono);font-size:12px;color:var(--chalk-faint);align-self:center}
 /* playing-now banner */
