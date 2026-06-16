@@ -232,7 +232,7 @@ Resources:
           const {SSMClient,GetParameterCommand} = require("@aws-sdk/client-ssm");
           const s3 = new S3Client(), ssm = new SSMClient();
           let apiKey;
-          const A = {"Czech Republic":"Czechia","Cote d'Ivoire":"Ivory Coast","Côte d'Ivoire":"Ivory Coast","Bosnia and Herzegovina":"Bosnia & Herzegovina","Turkey":"Türkiye","United States":"USA","Congo, DR":"DR Congo","Democratic Republic of Congo":"DR Congo"};
+          const A = {"Czech Republic":"Czechia","Cote d'Ivoire":"Ivory Coast","Côte d'Ivoire":"Ivory Coast","Bosnia and Herzegovina":"Bosnia & Herzegovina","Bosnia-Herzegovina":"Bosnia & Herzegovina","Turkey":"Türkiye","United States":"USA","Congo, DR":"DR Congo","Congo DR":"DR Congo","Democratic Republic of Congo":"DR Congo","Democratic Republic of the Congo":"DR Congo"};
           const norm = n => A[n] || n;
           const rs = async k => { try { const r = await s3.send(new GetObjectCommand({Bucket:process.env.BUCKET,Key:k})); return JSON.parse(await r.Body.transformToString()); } catch { return null; } };
           const gk = async () => { if (!apiKey) apiKey = (await ssm.send(new GetParameterCommand({Name:process.env.ODDS_KEY_PARAM,WithDecryption:true}))).Parameter.Value; return apiKey; };
@@ -253,12 +253,19 @@ Resources:
             const needOpen=!od.fetchedDates.includes(today)&&ms.some(m=>m.utcDate.startsWith(today));
             if (cIds.size||needOpen) {
               const evs=await af(`${base}/sports/${sp}/odds/?apiKey=${await gk()}&regions=us,uk&markets=h2h&oddsFormat=american`);
-              if (evs) { dirty=true; for(const ev of evs){const m=fm(ev,ms);if(!m)continue;const o=ex(ev,m);if(!o)continue;if(cIds.has(String(m.id)))o.closing=true;else o.opening=true;od.matches[m.id]=o;} if(needOpen)od.fetchedDates.push(today); }
-            }
-            const md=[...new Set(ms.filter(m=>m.status==="FINISHED"&&!od.matches[m.id]).map(m=>m.utcDate.slice(0,10)))].filter(d=>!od.fetchedDates.includes(d)).slice(0,2);
-            for(const d of md){
-              const h=await af(`${base}/historical/sports/${sp}/odds/?apiKey=${await gk()}&date=${d}T18:00:00Z&regions=us,uk&markets=h2h&oddsFormat=american`);
-              if(h?.data){dirty=true;for(const ev of h.data){const m=fm(ev,ms);if(m&&!od.matches[m.id]){const o=ex(ev,m);if(o){o.closing=true;od.matches[m.id]=o;}}}od.fetchedDates.push(d);}
+              if (evs) {
+                dirty=true;
+                const unmatched=[];
+                for(const ev of evs){
+                  const m=fm(ev,ms);
+                  if(!m){unmatched.push(`${ev.home_team} v ${ev.away_team}`);continue;}
+                  const o=ex(ev,m);if(!o)continue;
+                  if(cIds.has(String(m.id)))o.closing=true;else o.opening=true;
+                  od.matches[m.id]=o;
+                }
+                if(unmatched.length)console.warn("unmatched events (check team name aliases):",unmatched.join(" | "));
+                if(needOpen)od.fetchedDates.push(today);
+              }
             }
             if(dirty){od.updatedAt=new Date().toISOString();await s3.send(new PutObjectCommand({Bucket:process.env.BUCKET,Key:"odds.json",Body:JSON.stringify(od),ContentType:"application/json",CacheControl:"public, max-age=60"}));}
             console.log(`odds:${Object.keys(od.matches).length} dirty=${dirty}`);

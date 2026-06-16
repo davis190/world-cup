@@ -571,12 +571,14 @@ function ownerTag(team) {
   if (!o) return "";
   return `<span class="owner-tag" style="color:${OWNERS[o].color}">${o}</span>`;
 }
-function teamHtml(team, side, extra) {
+function teamHtml(team, side, extra, oddsPrice) {
+  const oddsEl = oddsPrice != null
+    ? `<span class="t-odds${oddsPrice < 0 ? " fav" : ""}">${oddsPrice > 0 ? "+" : ""}${oddsPrice}</span>` : "";
   if (!team || !TEAMS[team]) {
-    return `<div class="m-team ${side}"><span class="tname" style="color:var(--chalk-faint);font-style:italic;font-weight:400">${esc(extra || "TBD")}</span></div>`;
+    return `<div class="m-team ${side}"><div class="m-team-main"><span class="tname" style="color:var(--chalk-faint);font-style:italic;font-weight:400">${esc(extra || "TBD")}</span></div>${oddsEl}</div>`;
   }
   const t = TEAMS[team];
-  return `<div class="m-team ${side}"><span class="flag">${t.flag}</span><span class="t-stack"><span class="tname">${esc(team)}</span>${ownerTag(team)}</span></div>`;
+  return `<div class="m-team ${side}"><div class="m-team-main"><span class="flag">${t.flag}</span><span class="t-stack"><span class="tname">${esc(team)}</span>${ownerTag(team)}</span></div>${oddsEl}</div>`;
 }
 
 /* ================================================================
@@ -624,41 +626,32 @@ function renderSchedule(standings) {
     if (dk !== lastDay) { flush(); lastDay = dk; dayLabel = fmtDayLabel(m.utc); }
     const live = isLive(r);
     const done = isDone(r);
+    const o = state.odds[String(m.id)];
+    const fmtP = p => p == null ? "—" : p > 0 ? `+${p}` : `${p}`;
+    const drawEl = o?.draw != null ? `<span class="m-draw">${fmtP(o.draw)}</span>` : "";
+    const badge = o ? (o.closing
+      ? `<span class="o-badge closing" title="Closing line">🔒 closing</span>`
+      : `<span class="o-badge">pre-match</span>`) : "";
     let center;
     if (done || live) {
       const pen = r.pen && r.pen.home != null ? `<span class="pens">${r.pen.home}–${r.pen.away} pens</span>` :
         (r.duration && r.duration !== "REGULAR" ? `<span class="pens">a.e.t.</span>` : "");
-      // a live match with no score reported yet is, by definition, 0-0
       const dh = r.h ?? (live ? 0 : "–"), da = r.a ?? (live ? 0 : "–");
-      center = `<div class="m-score">${dh}<span class="vs"> : </span>${da}${pen}</div>`;
+      center = `<div class="m-score">${dh}<span class="vs"> : </span>${da}${pen}${drawEl}</div>`;
     } else {
-      center = `<div class="m-score"><span class="vs">vs</span></div>`;
+      center = `<div class="m-score"><span class="vs">vs</span>${drawEl}</div>`;
     }
     let hCls = "", aCls = "";
     if (done && r.winner === "HOME_TEAM") aCls = "loser";
     if (done && r.winner === "AWAY_TEAM") hCls = "loser";
     const tag = m.stage === "GROUP_STAGE" ? `Group ${m.group}` : `${STAGE_LABEL[m.stage]} · M${m.num}`;
-    const o = state.odds[String(m.id)];
-    let oddsHtml = "";
-    if (o && (o.home != null || o.away != null)) {
-      const fmt = p => p == null ? "—" : p > 0 ? `+${p}` : `${p}`;
-      oddsHtml = `<div class="m-odds">
-        ${o.closing ? `<span class="o-lock" title="Closing line">🔒</span>` : `<span class="o-tag">pre-match</span>`}
-        <span class="o-price${o.home < 0 ? " fav" : ""}">${fmt(o.home)}</span>
-        <span class="o-sep">·</span>
-        <span class="o-draw">Draw ${fmt(o.draw)}</span>
-        <span class="o-sep">·</span>
-        <span class="o-price${o.away < 0 ? " fav" : ""}">${fmt(o.away)}</span>
-        <span class="o-bk">${esc(o.bk || "")}</span>
-      </div>`;
-    }
+    const bkEl = o?.bk ? `<span class="m-bk">${esc(o.bk)}</span>` : "";
     dayBuf.push(`<div class="match${live ? " is-live" : ""}">
-      <div class="m-time">${live ? `<span class="live-tag">● LIVE</span>` : fmtTime(m.utc)}</div>
-      ${teamHtml(home, `right ${hCls}`, hDesc)}
+      <div class="m-time">${live ? `<span class="live-tag">● LIVE</span>` : fmtTime(m.utc)}${badge}</div>
+      ${teamHtml(home, `right ${hCls}`, hDesc, o?.home)}
       ${center}
-      ${teamHtml(away, aCls, aDesc)}
-      <div class="m-meta"><span class="grp">${tag}</span><br>${V[m.v][0]} · ${V[m.v][1]}</div>
-      ${oddsHtml}
+      ${teamHtml(away, aCls, aDesc, o?.away)}
+      <div class="m-meta"><span class="grp">${tag}</span><br>${V[m.v][0]} · ${V[m.v][1]}${bkEl}</div>
     </div>`);
   }
   flush();
