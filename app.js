@@ -286,6 +286,8 @@ const state = {
   rosterOwner: "",      // owner filter on Rosters tab
   rosterGroup: "",      // group filter on Rosters tab
   odds: {},             // match id (string) -> { home, away, draw, bk, closing, t }
+  oddsUpdatedAt: null,  // ISO string from odds.json updatedAt field
+  oddsFetchOk: null,    // true=last fetch ok, false=failed, null=never tried
   filters: { owner:"", team:"", group:"", city:"", upcoming:false },
   tz: "local",
   view: "schedule",
@@ -417,6 +419,30 @@ function breakTies(list, games) {
   return result;
 }
 
+/* Returns {clinched, eliminatedTop2} Sets of team names for in-progress groups.
+ * clinched: cannot fall below 2nd regardless of remaining results (points-based).
+ * eliminatedTop2: cannot reach top-2 regardless of remaining results.
+ * Teams in complete groups are not included (handled by advancedTop2 / g.complete). */
+function computeClinch(standings) {
+  const clinched = new Set();
+  const eliminatedTop2 = new Set();
+  for (const g of GROUPS) {
+    const { table, complete } = standings[g];
+    if (complete) continue;
+    const maxPts = row => row.pts + 3 * (3 - row.p);
+    for (let i = 0; i < 4; i++) {
+      const row = table[i];
+      // how many teams could possibly end with more pts (includes teams already ahead)
+      const couldBeAbove = table.filter(o => o !== row && maxPts(o) > row.pts).length;
+      if (couldBeAbove <= 1) clinched.add(row.team);
+      // how many teams are GUARANTEED to finish above (their current pts > row's max pts)
+      const definitelyAbove = table.filter(o => o !== row && o.pts > maxPts(row)).length;
+      if (definitelyAbove >= 2) eliminatedTop2.add(row.team);
+    }
+  }
+  return { clinched, eliminatedTop2 };
+}
+
 function thirdPlaceRanking(standings) {
   const thirds = GROUPS.map(g => ({ g, row: standings[g].table[2], complete: standings[g].complete }));
   thirds.sort((x, y) =>
@@ -459,6 +485,7 @@ function descLabel(d) {
    payouts
    ================================================================ */
 function computePool(standings) {
+  const { clinched, eliminatedTop2 } = computeClinch(standings);
   const thirds = thirdPlaceRanking(standings);
   const bestThird = new Set(thirds.slice(0, 8).map(t => t.row.team));
 
@@ -490,11 +517,14 @@ function computePool(standings) {
     const pos = g.table.findIndex(r => r.team === name) + 1;
     const row = g.table[pos - 1];
     const rc = reach[name];
-    const advancedTop2 = g.complete && pos <= 2;
+    const isClinched = clinched.has(name);
+    const isEliminatedTop2 = eliminatedTop2.has(name);
+    const advancedTop2 = (g.complete && pos <= 2) || isClinched;
     const advancedThird = g.complete && pos === 3 && bestThird.has(name);
     const earned =
       (advancedTop2 ? 5 : 0) + (rc.qf ? 10 : 0) + (rc.sf ? 30 : 0) + (rc.champ ? 80 : 0);
-    const projAdv = !g.complete && pos <= 2 && row.p > 0 ? 5 : 0;
+    // don't project $5 for clinched (already earned) or eliminated-from-top-2 teams
+    const projAdv = !g.complete && !isClinched && !isEliminatedTop2 && pos <= 2 && row.p > 0 ? 5 : 0;
 
     let alive, status;
     if (rc.champ) { alive = true; status = `<span class="st-champ">🏆 CHAMPION</span>`; }
@@ -510,16 +540,22 @@ function computePool(standings) {
     else if (rc.r16) { alive = true; status = `<span class="st-alive">in the R16</span>`; }
     else if (rc.r32 || advancedTop2 || advancedThird) {
       alive = true;
-      status = `<span class="st-alive">through${advancedThird ? " (3rd)" : ""}</span>`;
+      const label = isClinched && !g.complete ? "clinched" : "through";
+      status = `<span class="st-alive">${label}${advancedThird ? " (3rd)" : ""}</span>`;
     }
     else if (g.complete) { alive = false; status = `<span class="st-out">out · groups</span>`; }
+    else if (isEliminatedTop2) {
+      alive = pos <= 3; // 3rd place might still sneak through as best 3rd
+      const ord = ["1st", "2nd", "3rd", "4th"][pos - 1];
+      status = `<span class="st-out">elim · ${ord}</span>`;
+    }
     else {
       alive = true;
       const ord = ["1st", "2nd", "3rd", "4th"][pos - 1];
       status = `${ord} · ${row.pts} pts · ${row.p}/3`;
     }
     teams[name] = { earned, projAdv, alive, status, pos, advancedTop2, advancedThird,
-      qf: !!rc.qf, sf: !!rc.sf, champ: !!rc.champ };
+      isClinched, isEliminatedTop2, qf: !!rc.qf, sf: !!rc.sf, champ: !!rc.champ };
   }
 
   const owners = Object.keys(OWNERS).map(name => {
@@ -538,7 +574,7 @@ function computePool(standings) {
     return { name, roster, earned, proj, adv, qf, sf, champ, aliveCt };
   }).sort((a, b) => b.earned - a.earned || b.proj - a.proj || a.name.localeCompare(b.name));
 
-  return { teams, owners, bestThird, thirds };
+  return { teams, owners, bestThird, thirds, clinched, eliminatedTop2 };
 }
 
 /* ================================================================
@@ -646,12 +682,20 @@ function renderSchedule(standings) {
     if (done && r.winner === "AWAY_TEAM") hCls = "loser";
     const tag = m.stage === "GROUP_STAGE" ? `Group ${m.group}` : `${STAGE_LABEL[m.stage]} · M${m.num}`;
     const bkEl = o?.bk ? `<span class="m-bk">${esc(o.bk)}</span>` : "";
+    const oddsRowEl = o ? (() => {
+      const parts = [];
+      if (o.home != null) parts.push(`<span class="mor-home${o.home < 0 ? " fav" : ""}">${o.home > 0 ? "+" : ""}${o.home}</span>`);
+      if (o.draw != null) parts.push(`<span class="mor-draw">draw ${o.draw > 0 ? "+" : ""}${o.draw}</span>`);
+      if (o.away != null) parts.push(`<span class="mor-away${o.away < 0 ? " fav" : ""}">${o.away > 0 ? "+" : ""}${o.away}</span>`);
+      return parts.length ? `<div class="m-odds-row">${parts.join("")}</div>` : "";
+    })() : "";
     dayBuf.push(`<div class="match${live ? " is-live" : ""}">
       <div class="m-time">${live ? `<span class="live-tag">● LIVE</span>` : fmtTime(m.utc)}${badge}</div>
       ${teamHtml(home, `right ${hCls}`, hDesc, o?.home)}
       ${center}
       ${teamHtml(away, aCls, aDesc, o?.away)}
       <div class="m-meta"><span class="grp">${tag}</span><br>${V[m.v][0]} · ${V[m.v][1]}${bkEl}</div>
+      ${oddsRowEl}
     </div>`);
   }
   flush();
@@ -667,10 +711,14 @@ function renderGroups(standings, pool) {
     const { table, complete, played } = standings[g];
     const rows = table.map((r, i) => {
       const inBest8 = pool.bestThird.has(r.team) && i === 2;
+      const isClinched = pool.clinched.has(r.team);
+      const isElim = pool.eliminatedTop2.has(r.team);
       const cls = played === 0 ? "" : i < 2 ? "q1" : (inBest8 ? "q3" : "");
       const t = TEAMS[r.team];
+      const badge = isClinched ? `<span class="clinch-tag">CLINCHED</span>`
+        : isElim ? `<span class="clinch-tag elim">ELIM</span>` : "";
       return `<tr class="${cls}">
-        <td class="t-team"><span class="flag">${t.flag}</span>${esc(r.team)}${ownerTag(r.team)}</td>
+        <td class="t-team"><span class="flag">${t.flag}</span>${esc(r.team)}${ownerTag(r.team)}${badge}</td>
         <td>${r.p}</td><td>${r.w}</td><td>${r.d}</td><td>${r.l}</td>
         <td>${r.gf}</td><td>${r.ga}</td><td>${r.gd > 0 ? "+" + r.gd : r.gd}</td>
         <td class="t-pts">${r.pts}</td></tr>`;
@@ -920,11 +968,11 @@ async function fetchRoster(team) {
   try {
     // step 1: find "Current squad" section index
     const secRes = await fetch(
-      `https://en.wikipedia.org/w/api.php?action=parse&page=${slug}&prop=sections&format=json&origin=*`);
+      `https://en.wikipedia.org/w/api.php?action=parse&page=${slug}&prop=sections&redirects&format=json&origin=*`);
     const secData = await secRes.json();
     if (!secData.parse) { rosterCache[team] = { error:"Page not found on Wikipedia" }; return rosterCache[team]; }
-    const sec = secData.parse.sections.find(s => /current squad/i.test(s.line));
-    if (!sec) { rosterCache[team] = { error:"No 'Current squad' section found" }; return rosterCache[team]; }
+    const sec = secData.parse.sections.find(s => /current squad|^roster$/i.test(s.line));
+    if (!sec) { rosterCache[team] = { error:"No squad section found" }; return rosterCache[team]; }
 
     // step 2: fetch that section's HTML
     const htmlRes = await fetch(
@@ -1093,13 +1141,33 @@ async function toggleRoster(team) {
 async function fetchOddsData() {
   try {
     const res = await fetch("odds.json?_=" + Math.floor(Date.now() / 60000), { cache: "no-store" });
-    if (!res.ok) return;
+    if (!res.ok) { state.oddsFetchOk = false; renderOddsStatus(); return; }
     const json = await res.json();
     if (json?.matches) {
       state.odds = json.matches;
+      state.oddsUpdatedAt = json.updatedAt || null;
+      state.oddsFetchOk = true;
       if (state.view === "schedule") renderSchedule(window.__standings || computeStandings());
     }
-  } catch (e) { console.warn("odds fetch:", e.message); }
+    renderOddsStatus();
+  } catch (e) { console.warn("odds fetch:", e.message); state.oddsFetchOk = false; renderOddsStatus(); }
+}
+
+function renderOddsStatus() {
+  const el = $("#oddsStatus");
+  if (!el) return;
+  if (state.oddsFetchOk === null) { el.textContent = ""; return; }
+  if (!state.oddsFetchOk) {
+    el.textContent = "odds unavailable";
+    el.className = "odds-status stale";
+    return;
+  }
+  if (!state.oddsUpdatedAt) { el.textContent = ""; return; }
+  const d = new Date(state.oddsUpdatedAt);
+  const ageMs = Date.now() - d.getTime();
+  const stale = ageMs > 30 * 60e3;
+  el.textContent = "odds " + d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  el.className = "odds-status" + (stale ? " stale" : "");
 }
 
 /* ================================================================

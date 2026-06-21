@@ -155,6 +155,10 @@ table.standings{width:100%;border-collapse:collapse;font-size:14px}
 .standings tr.q3{background:linear-gradient(90deg, rgba(255,211,77,.05), transparent 70%);box-shadow:inset 3px 0 0 var(--gold)}
 .standings .flag{margin-right:7px}
 .standings .owner-tag{margin-left:8px}
+.clinch-tag{font-family:var(--f-mono);font-size:8.5px;font-weight:700;letter-spacing:.08em;
+  padding:1px 5px;border-radius:3px;margin-left:7px;vertical-align:middle;
+  background:rgba(200,241,53,.18);color:var(--lime);border:1px solid rgba(200,241,53,.4)}
+.clinch-tag.elim{background:rgba(255,77,94,.12);color:var(--live);border-color:rgba(255,77,94,.3)}
 
 /* ---------- bracket ---------- */
 .bracket-scroll{overflow-x:auto;padding-bottom:10px}
@@ -308,9 +312,14 @@ table.lb{width:100%;border-collapse:collapse;background:var(--panel);border:1px 
   .roster-hint{display:none}
 }
 
+/* ---------- mobile odds row ---------- */
+.m-odds-row{display:none}
+
 /* ---------- footer ---------- */
 footer{max-width:1280px;margin:0 auto;padding:18px 20px 34px;display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;
   font-family:var(--f-mono);font-size:11px;color:var(--chalk-faint);border-top:1px solid var(--line)}
+.odds-status{font-family:var(--f-mono);font-size:11px;color:var(--chalk-faint)}
+.odds-status.stale{color:var(--live)}
 
 /* ---------- responsive ---------- */
 @media (max-width:860px){
@@ -322,10 +331,15 @@ footer{max-width:1280px;margin:0 auto;padding:18px 20px 34px;display:flex;justif
   .m-team.right .t-stack{align-items:flex-end}
   .t-stack .tname{max-width:100%}
   .m-team .owner-tag{font-size:8.5px;padding:1px 5px}
-  /* hide per-column odds on mobile — too cramped */
+  /* hide per-column odds on mobile — show compact row instead */
   .t-odds,.m-draw,.o-badge,.m-bk{display:none}
+  .m-odds-row{display:flex;grid-column:1 / -1;justify-content:space-between;
+    font-family:var(--f-mono);font-size:11px;color:var(--chalk-dim);margin-top:1px;padding:0 2px}
+  .m-odds-row .fav{color:var(--lime);font-weight:700}
+  .mor-draw{color:var(--chalk-faint)}
   .next-match{display:none}
   .group-grid,.owner-grid{grid-template-columns:1fr}
+  .clinch-tag{display:none}
 }
 @media print{
   body{background:#fff;color:#000}
